@@ -5,7 +5,7 @@ from typing import Optional, Union
 from zigpy.profiles import zha
 import zigpy.types as t
 from zigpy.zcl import foundation
-from zigpy.zcl.clusters.general import Basic, Groups, Identify, OnOff, Ota, Scenes, Time
+from zigpy.zcl.clusters.general import Basic, Groups, Identify, OnOff, Ota, Scenes, Time, AnalogOutput
 from zigpy.zcl.clusters.hvac import Thermostat
 
 from zhaquirks import Bus, LocalDataCluster
@@ -259,7 +259,7 @@ class MoesManufCluster(TuyaManufClusterAttributes):
         elif attrid == MOES_BATTERY_LOW_ATTR:
             self.endpoint.device.battery_bus.listener_event(
                 "battery_change", 5 if value else 100
-            )
+            )         
 
 
 class MoesManufClusterNew(MoesManufCluster):
@@ -821,6 +821,43 @@ class MoesWindowDetection(LocalDataCluster, OnOff):
 
         return [command_id, foundation.Status.UNSUP_CLUSTER_COMMAND]
 
+class MOESTemperatureOffset(LocalDataCluster, AnalogOutput):
+
+    def __init__(self, *args, **kwargs):
+        """Init."""
+        super().__init__(*args, **kwargs)
+        self.endpoint.device.temperature_calibration_bus.add_listener(self)
+        self._update_attribute(
+            self.attridx["description"], "Temperature Offset")
+        self._update_attribute(
+            self.attridx["max_present_value"], 12)
+        self._update_attribute(
+            self.attridx["min_present_value"], -12)
+        self._update_attribute(self.attridx["resolution"], 0.5)
+        self._update_attribute(self.attridx["application_type"], 13 << 16)
+        self._update_attribute(self.attridx["engineering_units"], 62)
+
+    def set_value(self, value):
+        self._update_attribute(self.attridx["present_value"], value)
+
+    def get_value(self):
+        return self._attr_cache.get(self.attridx["present_value"])
+
+    async def write_attributes(self, attributes, manufacturer=None):
+        for attrid, value in attributes.items():
+            if isinstance(attrid, str):
+                attrid = self.attridx[attrid]
+            if attrid not in self.attributes:
+                self.error("%d is not a valid attribute id", attrid)
+                continue
+            self._update_attribute(attrid, value)
+
+            await self.endpoint.tuya_manufacturer.write_attributes(
+                {MOES_TEMP_CALIBRATION_ATTR: value * 10}, manufacturer=None
+            )
+        return ([foundation.WriteAttributesStatusRecord(foundation.Status.SUCCESS)],)
+
+
 
 ZONNSMART_CHILD_LOCK_ATTR = 0x0128  # [0] unlocked [1] child-locked
 ZONNSMART_WINDOW_DETECT_ATTR = 0x0108  # [0] inactive [1] active
@@ -1052,6 +1089,7 @@ class MoesHY368_Type1(TuyaThermostat):
     def __init__(self, *args, **kwargs):
         """Init device."""
         self.window_detection_bus = Bus()
+        self.temperature_calibration_bus = Bus()
         super().__init__(*args, **kwargs)
 
     signature = {
@@ -1093,6 +1131,7 @@ class MoesHY368_Type1(TuyaThermostat):
                     MoesThermostat,
                     MoesUserInterface,
                     MoesWindowDetection,
+                    MOESTemperatureOffset,
                     TuyaPowerConfigurationCluster2AA,
                 ],
                 OUTPUT_CLUSTERS: [Time.cluster_id, Ota.cluster_id],
